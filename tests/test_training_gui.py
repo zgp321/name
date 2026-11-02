@@ -161,3 +161,19 @@ def test_prediction_revalidates_metadata_after_successful_inspection(window, app
     w._has_torch = True; w.predict_model(); wait_until(app, lambda: not w.busy)
     assert w.errors and not calls
     assert w.result is None and not w.exportbtn.isEnabled()
+
+
+def test_retraining_active_prefix_invalidates_previous_prediction(window, app, dataset, model, monkeypatch):
+    import mine_tem.learn as learning
+    from mine_tem.processing import process
+    w = window; run_demo(w, app)
+    monkeypatch.setattr(learning, 'predict_line', lambda raw, prefix, cfg, line: process(raw,cfg,line))
+    w._has_torch = True; w.training.model_input.setText(str(model)+'.pt')
+    w.predict_model(); wait_until(app, lambda: not w.busy)
+    assert w.result is not None
+    def failed_training(*a, **kw): raise RuntimeError('training failed')
+    monkeypatch.setattr(learning, 'train', failed_training)
+    w.dataset.setText(str(dataset)); w.modelpath.setText(str(model)); w.start_train()
+    assert w.result is None and not w.exportbtn.isEnabled()
+    wait_until(app, lambda: not w.busy)
+    assert w.result is None and not w.exportbtn.isEnabled()

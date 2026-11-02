@@ -133,7 +133,11 @@ def predict(prefix,signal,time_axis):
     model.load_state_dict(checkpoint['state_dict']);model.eval()
     feat=torch.tensor(((np.log10(signal)-xm)/xs)[None,:],dtype=torch.float32)
     with torch.no_grad(): output=model(feat)[0].numpy()
-    return depths,10**(output*ys+ym)
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        rho = 10**(output*ys+ym)
+    if not np.isfinite(rho).all() or np.any(rho <= 0):
+        raise ValueError('模型预测产生非有限或非正电阻率；输入可能偏离训练分布，请核对数据并重新训练')
+    return depths,rho
 
 
 def predict_line(df,model_prefix,settings=None,line_id=None):

@@ -46,7 +46,8 @@ def _repair_station(g: pd.DataFrame, cfg: Settings) -> pd.DataFrame:
     else:
         a['raw_dbdt_t_s'] = -a['voltage_v'].astype(float) / (cfg.rx_turns * cfg.rx_area_m2)
     vals = a['raw_dbdt_t_s'].to_numpy(dtype=float)
-    good = np.isfinite(vals) & (np.abs(vals) >= cfg.noise_floor_t_per_s)
+    above_floor = np.isfinite(vals) & (np.abs(vals) >= cfg.noise_floor_t_per_s)
+    good = above_floor & (np.abs(vals) / cfg.noise_floor_t_per_s >= cfg.min_snr)
     if good.any():
         sign = np.sign(np.median(np.sign(vals[good])))
         if sign == 0:
@@ -56,6 +57,7 @@ def _repair_station(g: pd.DataFrame, cfg: Settings) -> pd.DataFrame:
     flip = good & (np.sign(vals) != sign)
     quality = np.full(len(a), '有效', dtype=object)
     quality[~good] = '低于噪声门限'
+    quality[above_floor & ~good] = '低信噪比(排除)'
     quality[flip] = '极性反转(排除)'
     valid = good & ~flip
     mag = np.abs(vals)
@@ -68,7 +70,8 @@ def _repair_station(g: pd.DataFrame, cfg: Settings) -> pd.DataFrame:
         if abs(offset) < 0.03 * np.nanmax(mag[valid]):
             vals = vals - offset
             mag = np.abs(vals)
-            valid &= (np.sign(vals) == sign) & (mag >= cfg.noise_floor_t_per_s)
+            valid &= ((np.sign(vals) == sign) & (mag >= cfg.noise_floor_t_per_s)
+                      & (mag / cfg.noise_floor_t_per_s >= cfg.min_snr))
             quality[~valid & (quality == '有效')] = '基线校正后无效'
 
     # Detect isolated spikes in log magnitude. Only interpolate interior good points.
@@ -131,16 +134,22 @@ def build_profile(readings: pd.DataFrame, n_depth: int = 140) -> dict:
     zs = np.linspace(0, max_depth, n_depth)
     grid = np.full((n_depth, len(xs)), np.nan)
     for j, station in enumerate(stations):
-        g = d[d['station'].astype(str) == station].sort_values('pseudo_depth_m')
-        if len(g) < 3:
-            continue
-        depths = g['pseudo_depth_m'].to_numpy(float)
-        logs = np.log10(g['rho_apparent_ohm_m'].to_numpy(float))
-        unique, idx = np.unique(depths, return_index=True)
-        if len(unique) < 3:
-            continue
-        valid = (zs >= unique[0]) & (zs <= unique[-1])
-        grid[valid, j] = 10**PchipInterpolator(unique, logs[idx])(zs[valid])
+        original = readings[readings['station'].astype(str) == station].sort_values('time_s')
+        usable = (original['accepted'] & np.isfinite(original['rho_apparent_ohm_m'])
+                  & (original['rho_apparent_ohm_m'] > 0) & np.isfinite(original['pseudo_depth_m']))
+        # A rejected time gate breaks interpolation support. Never join valid
+        # points across a QC gap, even when their pseudo-depths bracket it.
+        segments = (~usable).cumsum()
+        for _, g in original[usable].groupby(segments[usable], sort=False):
+            depths = g['pseudo_depth_m'].to_numpy(float)
+            logs = np.log10(g['rho_apparent_ohm_m'].to_numpy(float))
+            unique, idx = np.unique(depths, return_index=True)
+            if len(unique) < 3:
+                continue
+            valid = (zs >= unique[0]) & (zs <= unique[-1])
+            grid[valid, j] = 10**PchipInterpolator(unique, logs[idx])(zs[valid])
+    if not np.isfinite(grid).any():
+        raise ValueError('连续有效时间门不足，无法建立剖面；请检查质控记录')
     return {'x_m': xs, 'depth_m': zs, 'rho_ohm_m': grid, 'stations': stations,
             'view_type': 'late-time apparent resistivity pseudo-section; NOT 2D inversion'}
 
@@ -149,19 +158,24 @@ def pick_anomalies(profile: dict, cfg: Settings) -> tuple[pd.DataFrame, np.ndarr
     z = profile['depth_m']; x = profile['x_m']; rho = profile['rho_ohm_m']
     # Comparisons are only made for depths with enough valid sounding coverage.
     level_med = np.full(len(z), np.nan)
-    usable_rows = np.any(np.isfinite(rho), axis=1)
+    valid_rho = np.isfinite(rho) & (rho > 0)
+    usable_rows = np.any(valid_rho, axis=1)
     if usable_rows.any():
-        level_med[usable_rows] = np.nanmedian(rho[usable_rows], axis=1)
-    good = np.isfinite(rho) & (rho < cfg.low_rho_ohm_m) & (
+        level_med[usable_rows] = np.nanmedian(np.where(valid_rho, rho, np.nan)[usable_rows], axis=1)
+    good = valid_rho & (rho < cfg.low_rho_ohm_m) & (
         rho < cfg.contrast_ratio * np.maximum(level_med[:, None], 1e-10))
     if len(x) < 2 or len(z) < 2:
         return pd.DataFrame(), good
     dx = np.median(np.diff(x)); dz = np.median(np.diff(z))
     # Adjacent stations should be contiguous only when their spacing is not wildly irregular.
     discontinuities = np.diff(x) > 2.5 * dx
-    for i in np.flatnonzero(discontinuities):
-        good[:, i:i+2] = False
-    labels, count = label(good, structure=np.ones((3,3), dtype=int))
+    labels = np.zeros(good.shape, dtype=int)
+    edges = np.r_[0, np.flatnonzero(discontinuities) + 1, len(x)]
+    count = 0
+    for left, right in zip(edges[:-1], edges[1:]):
+        local, n = label(good[:, left:right], structure=np.ones((3,3), dtype=int))
+        labels[:, left:right] = np.where(local, local + count, 0)
+        count += n
     rows = []
     cell = float(dx*dz)
     for i in range(1, count+1):

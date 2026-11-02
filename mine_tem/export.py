@@ -2,6 +2,8 @@
 from pathlib import Path
 from datetime import datetime, timezone
 import json
+import shutil
+import tempfile
 import numpy as np
 import pandas as pd
 from .model import Result
@@ -9,6 +11,58 @@ from .visualize import plot_decay,plot_section,plot_3d_illustration
 
 
 def export_result(result:Result,folder:str|Path,with_images=True) -> Path:
+    """Stage a complete directory and roll back failed replacement attempts.
+
+    Existing unrelated files are retained. This guards ordinary write/rename
+    failures; it is not a power-loss transaction across two directory renames.
+    """
+    original = Path(folder)
+    if original.is_symlink():
+        raise ValueError('成果目录不能是符号链接')
+    target = original.resolve()
+    cwd = Path.cwd().resolve()
+    if target.resolve() == cwd or target.resolve() in cwd.parents:
+        raise ValueError('请使用独立成果子目录，不能替换当前工作目录或其父目录')
+    if target.exists() and not target.is_dir():
+        raise ValueError('成果路径已存在且不是目录')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix='.tem-export-', dir=target.parent))
+    stage = transaction / 'result'
+    backup = transaction / 'previous'
+    preserve_backup = False
+    try:
+        if target.exists():
+            shutil.copytree(target, stage, symlinks=True)
+        else:
+            stage.mkdir()
+        for name in ('gates_processed.csv', 'anomaly_candidates.csv', 'pseudo_section_xyz.csv',
+                     'pseudo_section_arrays.npz', 'manifest.json', '成果说明.md',
+                     'decay.png', 'pseudo_section.png', 'anomalies_2p5d.png'):
+            if (stage / name).is_symlink():
+                raise ValueError(f'成果文件不能是符号链接：{name}')
+        if not with_images:
+            for name in ('decay.png', 'pseudo_section.png', 'anomalies_2p5d.png'):
+                (stage / name).unlink(missing_ok=True)
+        _write_result(result, stage, with_images)
+        if target.exists():
+            target.rename(backup)
+        try:
+            stage.rename(target)
+        except BaseException:
+            if backup.exists():
+                try:
+                    backup.rename(target)
+                except OSError as exc:
+                    preserve_backup = True
+                    raise RuntimeError(f'成果替换失败，原成果保留于 {backup}') from exc
+            raise
+        return original
+    finally:
+        if not preserve_backup:
+            shutil.rmtree(transaction, ignore_errors=True)
+
+
+def _write_result(result:Result,folder:str|Path,with_images=True) -> Path:
     out=Path(folder);out.mkdir(parents=True,exist_ok=True)
     result.readings.to_csv(out/'gates_processed.csv',index=False,encoding='utf-8-sig')
     result.anomalies.to_csv(out/'anomaly_candidates.csv',index=False,encoding='utf-8-sig')

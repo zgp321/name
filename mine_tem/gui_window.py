@@ -275,6 +275,11 @@ class Window(QMainWindow):
 
     def _start_task(self, kind, **kwargs):
         if self.busy: return False
+        if (kind == 'train' and self._prediction_prefix is not None
+                and Path(kwargs['output']).resolve() == Path(self._prediction_prefix).resolve()):
+            # The path is unchanged but training may replace its weights/metadata.
+            # Invalidate before launch so even a partial failed save is safe.
+            self._context_changed()
         if self.worker is not None: self.worker.deleteLater()
         self.worker = Task(kind, self, **kwargs); self.worker.context_revision = self._revision
         self.worker.data_revision = self.training.data_revision; self.worker.model_revision = self.training.model_revision
