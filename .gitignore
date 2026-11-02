@@ -1,0 +1,36 @@
+# Python runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Local processing outputs and heavyweight checkpoints
+output/
+output_*/
+results/
+models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Confidential field data and reference paper (local-only; never auto-publish)
+reference_paper/
+field_data/
+private_data/
+*.env
+.env*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

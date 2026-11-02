@@ -1,0 +1,44 @@
+{
+  "software": "矿井瞬变电磁TEM水害智能识别处理系统V1.0",
+  "engine": "late-time half-space apparent-resistivity quicklook (not inversion)",
+  "utc_created": "2026-11-02T02:47:34.882084+00:00",
+  "line_id": "DEMO",
+  "settings": {
+    "tx_area_m2": 100.0,
+    "tx_turns": 1,
+    "current_a": 1.0,
+    "rx_area_m2": 1.0,
+    "rx_turns": 1,
+    "noise_floor_t_per_s": 1e-13,
+    "spike_log10_threshold": 0.48,
+    "smooth_window": 5,
+    "min_snr": 3.0,
+    "depth_factor": 1.0,
+    "low_rho_ohm_m": 35.0,
+    "contrast_ratio": 0.7,
+    "min_area_m2": 80.0,
+    "geology": "未知（需结合地质资料）",
+    "display_extrusion_width_m": 20.0,
+    "late_offset_correction": false
+  },
+  "quality": {
+    "total_gates": 1419,
+    "accepted_gates": 1415,
+    "rejected_gates": 4,
+    "stations": 43,
+    "qc_breakdown": {
+      "有效": 1412,
+      "低于噪声门限": 4,
+      "尖峰修复(插值)": 3
+    },
+    "limitations": [
+      "仅中心回线晚期近似；未建模关断波形、井下全空间效应、偏移距、耦合与磁导率变化",
+      "2D 图为 1D 视电阻率柱状拼接的伪剖面，非 2D/3D 反演",
+      "异常为低阻候选区，泥岩、黏土和金属支护可能造成类似响应",
+      "伪深度及异常范围需要测井、钻探及现场地质验证"
+    ]
+  },
+  "candidate_count": 1,
+  "view_type": "late-time apparent resistivity pseudo-section; NOT 2D inversion",
+  "demo_only": true
+}

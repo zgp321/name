@@ -1,0 +1,29 @@
+name: Python baseline tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install application and tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Unit tests (torch tests skip unless installed)
+        run: python -m pytest -q
+      - name: Batch CLI smoke test
+        run: python -m mine_tem.cli --demo --output output_ci
+      # GUI and SimPEG optional dependency integration tests must be added
+      # in P0 as explicit jobs. This workflow has not yet run on GitHub.

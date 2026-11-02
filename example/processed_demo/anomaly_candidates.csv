@@ -1,0 +1,2 @@
+﻿id,x_start_m,x_end_m,depth_top_m,depth_bottom_m,area_pseudo_m2,min_rho_ohm_m,median_rho_ohm_m,interpretation,evidence_level
+A001,90.0,120.0,15.408863240109334,97.95634488355219,2140.7,13.6,21.3,低阻候选异常（不等同于含水体）,需要钻探/地质/其他物探验证

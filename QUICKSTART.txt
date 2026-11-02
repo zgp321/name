@@ -1,0 +1,12 @@
+矿井瞬变电磁 TEM 水害辅助判读系统 V1.0
+
+1. Windows 安装 Python 3.12，双击 setup_windows.bat，首次安装需联网。
+2. 双击 start_windows.bat 打开中文界面。
+3. 点击“加载合成演示测线”，检查参数，点击“运行处理 / 异常识别”。
+4. 点击“导出完整成果”；表格、剖面图片、参数 JSON 将写入指定目录。
+5. 完整使用说明：README.md；许可来源：OPEN_SOURCE.md；测试边界：测试与交付说明.md。
+
+纯命令行：python -m mine_tem.cli --demo --output demo_out
+可选：pip install "simpeg>=0.25,<0.27" 以启用地表 1D 分层反演；pip install torch 以训练标注模型。
+
+注意：默认是晚期半空间视电阻率伪剖面，非二维三维反演，不能单凭低阻异常确证矿井积水。

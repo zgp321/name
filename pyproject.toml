@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mine-tem-water-risk"
+version = "1.0.0"
+description = "矿井瞬变电磁TEM水害智能识别处理系统V1.0（辅助判读）"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<3", "pandas>=2.0,<3", "scipy>=1.10,<2",
+  "matplotlib>=3.7,<4", "PySide6>=6.6,<7", "openpyxl>=3.1,<4"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pyinstaller>=6"]
+
+[project.scripts]
+mine-tem = "mine_tem.cli:main"
+mine-tem-gui = "mine_tem.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["mine_tem*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
