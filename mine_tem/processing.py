@@ -9,6 +9,7 @@ import pandas as pd
 from scipy.ndimage import label, median_filter, gaussian_filter
 from scipy.interpolate import PchipInterpolator
 from .model import MU0, Settings, Result, validate_measurements
+from .quality import build_quality_report
 
 
 def late_time_dbdt(rho_ohm_m, times_s, tx_moment_am2):
@@ -220,4 +221,5 @@ def process(df: pd.DataFrame, cfg: Settings | None = None, line_id: str | None =
                               '2D 图为 1D 视电阻率柱状拼接的伪剖面，非 2D/3D 反演',
                               '异常为低阻候选区，泥岩、黏土和金属支护可能造成类似响应',
                               '伪深度及异常范围需要测井、钻探及现场地质验证']}
-    return Result(clean,profile,anomalies,quality,cfg,line_id)
+    return Result(clean, profile, anomalies, quality, cfg, line_id,
+                  quality_report=build_quality_report(clean))

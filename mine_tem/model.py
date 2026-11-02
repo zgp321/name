@@ -55,6 +55,11 @@ class Result:
     quality: dict[str, Any]
     settings: Settings
     line_id: str
+    # Optional audit/interpretation attachments. They do not alter the core
+    # pseudo-section and remain None when no external geology is loaded.
+    quality_report: dict[str, Any] | None = None
+    boreholes: pd.DataFrame | None = None
+    borehole_links: pd.DataFrame | None = None
 
 
 REQUIRED_COMMON = ["line_id", "station", "x_m", "y_m", "elevation_m", "time_s"]

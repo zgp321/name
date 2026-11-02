@@ -3,6 +3,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from numbers import Real, Integral
 import traceback
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
@@ -15,7 +16,9 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from .model import Settings
 from .demo import make_demo
-from .visualize import plot_decay, plot_section, plot_3d_illustration
+from .visualize import plot_decay, plot_section, plot_3d_illustration, plot_joint_section
+from .quality import build_quality_report
+from .geology import read_boreholes, link_boreholes_to_candidates
 from .gui_support import STYLE, ReadOnlyTable, Task, export_folder, Canvas
 
 
@@ -25,6 +28,8 @@ class Window(QMainWindow):
         self.setWindowTitle('矿井 TEM 水害辅助判读工作台 · V1.0')
         self.resize(1360, 860); self.setMinimumSize(1024, 720)
         self.raw = self.result = self.worker = None
+        self.boreholes = self.borehole_links = None
+        self.qc_report = None
         self.paths = []; self.busy = False
         self._revision = 0; self._result_revision = None
         self._prediction_prefix = None
@@ -147,6 +152,18 @@ class Window(QMainWindow):
 
     def _analysis_page(self):
         v = self._scroll_page()
+        self.analysis_tabs = QTabWidget()
+        result_page = QWidget(); result_layout = QVBoxLayout(result_page)
+        result_layout.setContentsMargins(0, 0, 0, 0); result_layout.setSpacing(12)
+        self._build_result_tab(result_layout)
+        self._build_quality_tab()
+        self._build_geology_tab()
+        self.analysis_tabs.addTab(result_page, '结果判读')
+        self.analysis_tabs.addTab(self.quality_page, '质量诊断')
+        self.analysis_tabs.addTab(self.geology_page, '地质 / 钻孔联合')
+        v.addWidget(self.analysis_tabs, 1)
+
+    def _build_result_tab(self, v):
         cards = QHBoxLayout(); self.metrics = []
         for caption in ('测点数量', '有效 / 总时间门', '拒绝时间门', '低阻候选区'):
             card = QFrame(); card.setObjectName('card'); sub = QVBoxLayout(card)
@@ -182,6 +199,59 @@ class Window(QMainWindow):
         self.quality_note = self._label('', 'subtitle'); sub.addWidget(self.quality_note)
         splitter.addWidget(group); splitter.setSizes([380, 190]); v.addWidget(splitter, 1)
 
+    @staticmethod
+    def _fill_table(table, frame, names=None):
+        frame = frame.copy()
+        columns = list(frame.columns)
+        table.setColumnCount(len(columns)); table.setRowCount(len(frame))
+        table.setHorizontalHeaderLabels([(names or {}).get(c, c) for c in columns])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        for i, row in enumerate(frame.itertuples(index=False, name=None)):
+            for j, value in enumerate(row):
+                text = f'{value:.4g}' if isinstance(value, Real) and not isinstance(value, Integral) else str(value)
+                item = QTableWidgetItem(text); item.setToolTip(str(value)); table.setItem(i, j, item)
+
+    def _build_quality_tab(self):
+        self.quality_page = QWidget(); v = QVBoxLayout(self.quality_page)
+        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(10)
+        self.qc_summary = self._label('处理完成后显示测点级质量摘要；此页不改变任何 QC 决策。')
+        v.addWidget(self.qc_summary)
+        reason_group = QGroupBox('拒绝原因统计'); reason_layout = QVBoxLayout(reason_group)
+        self.qc_reason_table = ReadOnlyTable(); self.qc_reason_table.setMinimumHeight(95)
+        reason_layout.addWidget(self.qc_reason_table); v.addWidget(reason_group)
+        station_group = QGroupBox('测点质量汇总'); station_layout = QVBoxLayout(station_group)
+        row = QHBoxLayout(); row.addWidget(self._label('选中测点查看衰减曲线：'))
+        self.qc_station = QComboBox(); self.qc_station.setMinimumWidth(160)
+        self.qc_station.currentTextChanged.connect(self._show_qc_station)
+        row.addWidget(self.qc_station); row.addStretch(); station_layout.addLayout(row)
+        self.qc_station_table = ReadOnlyTable(); self.qc_station_table.setMinimumHeight(145)
+        station_layout.addWidget(self.qc_station_table)
+        v.addWidget(station_group)
+        self.qc_canvas = Canvas(Figure(figsize=(8, 2.8), dpi=100)); self.qc_canvas.setMinimumHeight(245)
+        v.addWidget(self.qc_canvas, 1)
+        gate_group = QGroupBox('选中测点时间门明细'); gate_layout = QVBoxLayout(gate_group)
+        self.qc_gate_table = ReadOnlyTable(); self.qc_gate_table.setMinimumHeight(125)
+        gate_layout.addWidget(self.qc_gate_table); v.addWidget(gate_group)
+        v.addWidget(self._label('原始与质控后曲线用于核查拒绝门和尖峰修复；伪深度插值不会在此页重新生成。', 'subtitle'))
+
+    def _build_geology_tab(self):
+        self.geology_page = QWidget(); v = QVBoxLayout(self.geology_page)
+        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(10)
+        row = QHBoxLayout()
+        self.boreholebtn = self._button('导入地质 / 钻孔 CSV', self.pick_boreholes, True)
+        self.clear_boreholebtn = self._button('清除叠加', self.clear_boreholes, True)
+        row.addWidget(self.boreholebtn); row.addWidget(self.clear_boreholebtn); row.addStretch(); v.addLayout(row)
+        self.borehole_source = self._label('未导入钻孔区间。必需字段：line_id、borehole_id、x_m、depth_top_m、depth_bottom_m、lithology。')
+        v.addWidget(self.borehole_source)
+        self.borehole_table = ReadOnlyTable(); self.borehole_table.setMinimumHeight(120)
+        v.addWidget(self.borehole_table)
+        self.geology_canvas = Canvas(Figure(figsize=(8, 3), dpi=100)); self.geology_canvas.setMinimumHeight(260)
+        v.addWidget(self.geology_canvas, 1)
+        link_group = QGroupBox('候选异常空间关联（伪深度几何对照）'); link_layout = QVBoxLayout(link_group)
+        self.borehole_link_table = ReadOnlyTable(); self.borehole_link_table.setMinimumHeight(120)
+        link_layout.addWidget(self.borehole_link_table); v.addWidget(link_group)
+        v.addWidget(self._label('钻孔深度与 TEM 视深度仅作几何对照；水文证据原样保留，需专业人员结合原始记录复核。', 'subtitle'))
+
     def _learn_page(self):
         from .gui_training import TrainingPanel
         v = self._scroll_page(); self.training = TrainingPanel(); v.addWidget(self.training)
@@ -213,6 +283,7 @@ class Window(QMainWindow):
                      self.dataset, self.datasetbtn, self.modelpath, self.epochs, *self.fields.values()): ctrl.setEnabled(free)
         self.lines.setEnabled(free and has_data); self.nextbtn.setEnabled(has_data)
         self.runbtn.setEnabled(free and has_data); self.rerunbtn.setEnabled(free and has_data)
+        self.boreholebtn.setEnabled(free); self.clear_boreholebtn.setEnabled(free and self.boreholes is not None)
         self.trainbtn.setEnabled(free and self._has_torch); self.predictbtn.setEnabled(free and self._has_torch and has_data)
         self.exportbtn.setEnabled(free and self.result is not None and self._result_revision == self._revision)
         self.training.set_busy(self.busy, self._has_torch, has_data)
@@ -220,9 +291,14 @@ class Window(QMainWindow):
     def _context_changed(self, *_):
         self._revision += 1; self.result = None; self._result_revision = None
         self._prediction_prefix = None
+        self.qc_report = None; self.borehole_links = None
         self.anom_table.setRowCount(0); self.quality_note.clear()
         for value in self.metrics: value.setText('—')
         for canvas in self.canvases: canvas.figure.clear(); canvas.draw_idle()
+        self.qc_reason_table.setRowCount(0); self.qc_station_table.setRowCount(0); self.qc_station.clear()
+        self.qc_summary.setText('处理完成后显示测点级质量摘要；此页不改变任何 QC 决策。')
+        self.qc_canvas.figure.clear(); self.qc_canvas.draw_idle(); self.qc_gate_table.setRowCount(0)
+        self.borehole_link_table.setRowCount(0); self.geology_canvas.figure.clear(); self.geology_canvas.draw_idle()
         text = '数据或参数已变化，请重新运行当前测线。' if self.raw is not None else '请先导入测线数据。'
         self.summary.setText(text)
         if not self.busy:
@@ -239,6 +315,25 @@ class Window(QMainWindow):
         if self.busy: return
         paths, _ = QFileDialog.getOpenFileNames(self, '选择 TEM 数据文件', '', 'TEM (*.csv *.txt *.tsv *.xlsx *.xlsm)')
         if paths: self.import_files(paths)
+
+    def pick_boreholes(self):
+        if self.busy: return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, '选择地质 / 钻孔文件', '', '地质表 (*.csv *.txt *.tsv *.xlsx *.xlsm)')
+        if paths: self.import_boreholes(paths)
+
+    def import_boreholes(self, paths):
+        if self.busy or not paths: return False
+        return self._start_task('boreholes', paths=[str(p) for p in paths])
+
+    def clear_boreholes(self):
+        if self.busy: return
+        self.boreholes = self.borehole_links = None
+        if self.result is not None:
+            self.result.boreholes = None; self.result.borehole_links = None
+        self.borehole_source.setText('未导入钻孔区间。必需字段：line_id、borehole_id、x_m、depth_top_m、depth_bottom_m、lithology。')
+        self.borehole_table.setRowCount(0); self.borehole_link_table.setRowCount(0)
+        self.geology_canvas.figure.clear(); self.geology_canvas.draw_idle(); self._refresh_controls()
 
     def import_files(self, paths):
         if self.busy or not paths: return False
@@ -286,11 +381,13 @@ class Window(QMainWindow):
         self.worker.epoch_progress.connect(self._training_progress)
         self.worker.progress.connect(self._progress); self.worker.finished.connect(self._finish_task); self.busy = True
         labels = {'import': '正在导入数据', 'process': '正在处理当前测线', 'predict': '正在模型推理', 'train': '正在监督训练',
-                  'export': '正在导出成果', 'dataset_info': '正在检查训练数据', 'model_info': '正在检查模型元数据'}
+                  'export': '正在导出成果', 'dataset_info': '正在检查训练数据', 'model_info': '正在检查模型元数据',
+                  'boreholes': '正在检查地质 / 钻孔文件'}
         self.task_status.setText(labels[kind] + ' · 请等待任务完成')
         self.statusBar().showMessage(self.task_status.text()); self.log.appendPlainText(labels[kind]); self.runprogress.setRange(0, 0)
         if kind == 'export':
-            for canvas in [*self.canvases, self.training.canvas]: canvas.draw(); canvas.suspended = True
+            for canvas in [*self.canvases, self.training.canvas, self.qc_canvas, self.geology_canvas]:
+                canvas.draw(); canvas.suspended = True
             self.plots.setEnabled(False)
         if kind == 'train':
             self.training.begin_training(kwargs['epochs'])
@@ -313,6 +410,12 @@ class Window(QMainWindow):
             elif task.kind in ('process', 'predict'):
                 if task.context_revision != self._revision: raise RuntimeError('处理期间数据或参数发生变化，请重新处理。')
                 self._present_result(task.payload); self._result_revision = task.context_revision
+            elif task.kind == 'boreholes':
+                self.boreholes = task.payload
+                self.borehole_source.setText(
+                    f'已导入 {self.boreholes["borehole_id"].nunique()} 个钻孔、{len(self.boreholes)} 个岩性区间。')
+                self._fill_table(self.borehole_table, self.boreholes)
+                self._refresh_geology()
             elif task.kind == 'dataset_info':
                 if task.data_revision != self.training.data_revision: raise ValueError('数据路径已变化，请重新检查。')
                 self.training.show_dataset(task.payload)
@@ -334,7 +437,7 @@ class Window(QMainWindow):
             self.task_status.setText('任务未完成 · 详情见模型训练页的运行日志'); self._show_error('操作未完成', detail)
         finally:
             self.busy = False
-            for canvas in [*self.canvases, self.training.canvas]: canvas.suspended = False
+            for canvas in [*self.canvases, self.training.canvas, self.qc_canvas, self.geology_canvas]: canvas.suspended = False
             self.plots.setEnabled(True)
             for canvas in self.canvases: canvas.draw_idle()
             self.runprogress.setRange(0, 100); self.runprogress.setValue(100 if success else 0)
@@ -345,7 +448,8 @@ class Window(QMainWindow):
                 message = {'import': '导入完成 · 请核对处理参数', 'process': '处理完成 · 请复核质量与候选区',
                            'predict': '推理完成 · 请结合独立数据验证', 'train': '训练完成 · 请用独立数据检验',
                            'export': f'导出完成 · {task.payload}', 'dataset_info': '训练数据检查通过',
-                           'model_info': '模型元数据检查通过（未加载权重）'}[task.kind]
+                           'model_info': '模型元数据检查通过（未加载权重）',
+                           'boreholes': '地质 / 钻孔导入完成 · 请检查空间关联'}[task.kind]
                 if task.kind == 'train': message = self.training.training_status.text()
                 self.task_status.setText(message); self.log.appendPlainText(message)
             self.statusBar().showMessage(self.task_status.text()); self._refresh_controls()
@@ -370,6 +474,91 @@ class Window(QMainWindow):
                 item = QTableWidgetItem(text); item.setToolTip(str(value))
                 self.anom_table.setItem(i, j, item)
         self.quality_note.setText('质量记录：' + '；'.join(f'{k} {v} 门' for k, v in q['qc_breakdown'].items()))
+        self.qc_report = result.quality_report or build_quality_report(result.readings)
+        totals = self.qc_report['totals']
+        self.qc_summary.setText(
+            f'时间门 {totals["total_gates"]:,} · 有效 {totals["accepted_gates"]:,} · '
+            f'拒绝 {totals["rejected_gates"]:,} · 有效率 {totals["acceptance_rate"]:.1%}')
+        self._fill_table(self.qc_reason_table, self.qc_report['reason_summary'],
+                         {'qc': 'QC 状态', 'gate_count': '门数', 'accepted_gates': '有效门',
+                          'rejected_gates': '拒绝门', 'share': '占比'})
+        self._fill_table(self.qc_station_table, self.qc_report['station_summary'],
+                         {'station': '测点', 'x_m': '里程 (m)', 'y_m': 'Y (m)', 'elevation_m': '高程 (m)',
+                          'total_gates': '总门数', 'accepted_gates': '有效门', 'rejected_gates': '拒绝门',
+                          'acceptance_rate': '有效率', 'snr_median': 'SNR 中位数', 'snr_min': 'SNR 最小值',
+                          'first_valid_time_s': '首个有效时间 (s)', 'last_valid_time_s': '末个有效时间 (s)',
+                          'qc_breakdown': 'QC 分布'})
+        self.qc_station.blockSignals(True); self.qc_station.clear()
+        self.qc_station.addItems(self.qc_report['station_summary']['station'].astype(str).tolist())
+        self.qc_station.blockSignals(False)
+        if self.qc_station.count():
+            self.qc_station.setCurrentIndex(0)
+            self._show_qc_station(self.qc_station.currentText())
+        self._refresh_geology()
+
+    def _show_qc_station(self, station):
+        self.qc_canvas.figure.clear(); ax = self.qc_canvas.figure.add_subplot(111)
+        self.qc_gate_table.setRowCount(0)
+        if self.result is None or not station:
+            ax.text(.5, .5, '处理完成后选择测点', transform=ax.transAxes, ha='center')
+        else:
+            d = self.result.readings[self.result.readings['station'].astype(str) == str(station)].sort_values('time_s')
+            if len(d):
+                self._fill_table(self.qc_gate_table, d[[
+                    c for c in ('time_s', 'qc', 'accepted', 'snr_min', 'raw_dbdt_t_s',
+                                'dbdt_clean_t_s', 'rho_apparent_ohm_m', 'pseudo_depth_m')
+                    if c in d.columns
+                ]], {'time_s': '时间 (s)', 'qc': 'QC 状态', 'accepted': '有效',
+                     'snr_min': 'SNR', 'raw_dbdt_t_s': '原始 dB/dt (T/s)',
+                     'dbdt_clean_t_s': '质控后 dB/dt (T/s)',
+                     'rho_apparent_ohm_m': '视电阻率 (Ω·m)', 'pseudo_depth_m': '伪深度 (m)'})
+                ax.loglog(d['time_s'], np.abs(d['raw_dbdt_t_s']), color='#9fb2bc', marker='.', label='原始')
+                accepted = d[d['accepted']]
+                if len(accepted):
+                    ax.loglog(accepted['time_s'], np.abs(accepted['dbdt_clean_t_s']), color='#167b73', marker='.', label='质控后')
+                rejected = d[~d['accepted']]
+                if len(rejected):
+                    ax.scatter(rejected['time_s'], np.maximum(np.abs(rejected['raw_dbdt_t_s']), 1e-300),
+                               color='#ca8031', marker='x', label='拒绝门')
+                ax.set(title=f'测点 {station} QC 衰减曲线', xlabel='时间 t (s)', ylabel='|dB/dt| (T/s)')
+                ax.grid(True, which='both', alpha=.2); ax.legend(fontsize=8)
+            else:
+                ax.text(.5, .5, '没有该测点的时间门', transform=ax.transAxes, ha='center')
+        self.qc_canvas.figure.tight_layout(); self.qc_canvas.draw_idle()
+
+    def _refresh_geology(self):
+        self.borehole_link_table.setRowCount(0)
+        self.geology_canvas.figure.clear()
+        if self.result is None:
+            self.geology_canvas.draw_idle(); return
+        try:
+            if self.boreholes is not None and not self.boreholes.empty:
+                self.borehole_links = link_boreholes_to_candidates(self.boreholes, self.result)
+                self.result.boreholes = self.boreholes.copy()
+                self.result.borehole_links = self.borehole_links.copy()
+                self._fill_table(self.borehole_link_table, self.borehole_links,
+                                 {'line_id': '测线', 'borehole_id': '钻孔', 'candidate_id': '候选区',
+                                  'x_distance_m': 'X 距离 (m)', 'depth_overlap_m': '伪深度重叠 (m)',
+                                  'candidate_x_start_m': '候选起始 X', 'candidate_x_end_m': '候选终止 X',
+                                  'candidate_depth_top_m': '候选顶深', 'candidate_depth_bottom_m': '候选底深',
+                                  'lithology': '岩性', 'water_evidence': '外部水文证据',
+                                  'confidence': '置信度', 'notes': '备注', 'spatial_relation': '空间关系',
+                                  'evidence_level': '证据级别'})
+                self.borehole_source.setText(
+                    f'已导入 {self.boreholes["borehole_id"].nunique()} 个钻孔、{len(self.boreholes)} 个岩性区间；'
+                    f'当前测线几何关联 {len(self.borehole_links)} 条。')
+                plot_joint_section(self.result, self.boreholes, fig=self.geology_canvas.figure)
+            else:
+                self.result.boreholes = None; self.result.borehole_links = None
+                self.geology_canvas.figure.add_subplot(111).text(.5, .5, '导入钻孔区间后显示叠加图',
+                                                                  transform=self.geology_canvas.figure.axes[0].transAxes,
+                                                                  ha='center')
+        except Exception as exc:
+            self.borehole_links = None
+            self.geology_canvas.figure.add_subplot(111).text(.5, .5, f'联合解释不可用：{exc}',
+                                                              transform=self.geology_canvas.figure.axes[0].transAxes,
+                                                              ha='center')
+        self.geology_canvas.figure.tight_layout(); self.geology_canvas.draw_idle()
 
     def _show_error(self, title, detail):
         box = QMessageBox(self); box.setIcon(QMessageBox.Critical); box.setWindowTitle(title)

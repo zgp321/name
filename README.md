@@ -6,7 +6,7 @@
 
 ## 主要内容
 
-使用 Python + NumPy/SciPy + PySide6 实现四个侧边导航工作区：① 数据与测线；② 处理参数；③ 结果判读；④ 模型训练。界面采用深色导航、浅色卡片、质量统计和可缩放图表，支持批量导入、设备参数与阈值设置、中心回线晚期视电阻率伪剖面、低阻候选区、2.5D 示意以及 CSV/PNG/NPZ/JSON 导出。可选 PyTorch 1D-CNN 用于成对监督训练与载入预测（训练日志、验证损失、最佳模型和早停）。
+使用 Python + NumPy/SciPy + PySide6 实现四个侧边导航工作区：① 数据与测线；② 处理参数；③ 结果判读；④ 模型训练。结果页内包含结果判读、质量诊断和地质/钻孔联合三个标签。界面采用深色导航、浅色卡片、质量统计和可缩放图表，支持批量导入、设备参数与阈值设置、中心回线晚期视电阻率伪剖面、低阻候选区、2.5D 示意以及 CSV/PNG/NPZ/JSON 导出。可选 PyTorch 1D-CNN 用于成对监督训练与载入预测（训练日志、验证损失、最佳模型和早停）。
 
 同时提供命令行，允许批处理；可选 SimPEG 1D 地表分层介质正演 + SciPy 最小二乘拟合模块。
 
@@ -43,6 +43,12 @@ Linux/macOS：`python3.12 -m venv .venv && source .venv/bin/activate && pip inst
 3. 在“结果判读”检查有效/拒绝时间门和候选区，使用图表工具栏缩放、平移和复位。图表与候选表可拖动调整比例；小窗口可滚动查看完整内容。数值在表格中简化显示，悬停可查看完整值，导出精度不变。
 4. 点击“导出完整成果”，选择父目录。成果保存在其下的 `TEM_测线名` 子目录；不安全字符或过长名称会转换为可读前缀加确定性摘要，以区分不同测线，文件内保留原始测线名。同一测线再次导出至原目录会更新成果文件；目录属于另一测线、包含未知文件或符号链接时会拒绝写入，须改选输出位置。
 5. “模型训练”需额外安装 PyTorch。缺少 PyTorch / SimPEG 时界面会说明原因，基础快速处理仍可使用。
+
+### 质量诊断与地质 / 钻孔联合解释
+
+处理完成后，结果页的“质量诊断”标签按原始 `qc`、`accepted` 和 `snr_min` 字段显示拒绝原因、测点汇总、时间门明细和选中测点衰减曲线。它只呈现已有 QC 决策，不会重新插值或悄悄改变有效门。
+
+“地质 / 钻孔联合”标签支持导入带区间的 CSV/TXT/XLSX。必需字段为 `line_id,borehole_id,x_m,y_m,elevation_m,depth_top_m,depth_bottom_m,lithology`，可选字段为 `water_evidence,confidence,notes`；也支持对应中文表头。缺少 `line_id` 时只按约定补为 `L1`，实际测线建议始终填写测线编号，否则不会自动关联到 `DEMO` 等其他编号。系统会校验深度区间、坐标和同一钻孔的区间重叠，在伪剖面上叠加钻孔位置/岩性区间，并给出候选异常的 X 距离和伪深度重叠。该表是几何辅助证据，外部水文记录只原样保存，不自动生成“含水/不含水”结论。
 
 切换测线、重新导入、修改参数或引擎后，旧结果会清除，须重新处理后才能导出。导入、计算、训练、推理、导出同时只能运行一项；任务运行时可浏览页面和日志，不能改参或关闭窗口。失败原因可展开查看，详情也记录在“模型训练”页的运行日志。导入失败会保留此前的数据及结果。
 
@@ -88,6 +94,8 @@ train('homogeneous_tutorial_only.npz', 'my_models/lesson', epochs=20)
 - `anomaly_candidates.csv`：相对背景 + 绝对阈值的候选块、范围及**伪剖面面积**，不是实际含水面积，更不是三维体积。
 - `decay.png`、`pseudo_section.png`、`anomalies_2p5d.png`：可审查的图形成果（2.5D 图只是二维掩膜假设延伸）。
 - `manifest.json`：仪器参数、阈值、所用算法、门数统计及限制。
+- `qc_station_summary.csv`、`qc_gate_summary.csv`：测点级质量汇总和门级 QC 明细。
+- `boreholes.csv`、`borehole_candidate_links.csv`、`geology_joint_section.png`：已导入的钻孔区间、候选异常几何关联和伪深度叠加图（仅在导入钻孔时生成）。
 
 ## 目录
 
@@ -95,6 +103,8 @@ train('homogeneous_tutorial_only.npz', 'my_models/lesson', epochs=20)
 mine_tem/model.py       核心数据结构和安全校验
 mine_tem/io.py          中文/英文表头、批量导入
 mine_tem/processing.py  质量控制、TEM视电阻率、成像和异常圈定
+mine_tem/quality.py     门级 QC 汇总与质量诊断
+mine_tem/geology.py     钻孔/岩性表校验与几何关联
 mine_tem/simpeg_engine.py  可选 SimPEG 1D地表正反演
 mine_tem/learn.py       成对标签监督训练与预测
 mine_tem/gui.py         PySide6中文GUI
@@ -109,6 +119,6 @@ mine_tem/demo.py        可重复理想半空间模拟数据
 
 ## 验证
 
-`python -m pytest -q`，包括半空间正演—反算代数一致性、时间单位、多测线、无效数据、批量导入、导出和训练模块基本流程。**这些不是现场精度验收**，正式工程还需仪器标定、井下全空间电磁模拟、盲测数据集、施工钻孔验证、误判/漏判率和第三方审查。
+`python -m pytest -q`，包括半空间正演—反算代数一致性、时间单位、多测线、无效数据、批量导入、QC 诊断、钻孔区间校验/关联、导出和训练模块基本流程。当前云环境验证为 **77 passed**；仍有 Matplotlib Qt 上游弃用警告。**这些不是现场精度验收**，正式工程还需仪器标定、井下全空间电磁模拟、盲测数据集、施工钻孔验证、误判/漏判率和第三方审查。
 
 来源和许可证见 [OPEN_SOURCE.md](OPEN_SOURCE.md)。

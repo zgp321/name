@@ -111,6 +111,9 @@ class Task(QThread):
         if self.kind == 'model_info':
             from .training_info import inspect_model
             return inspect_model(args['model'])
+        if self.kind == 'boreholes':
+            from .geology import read_boreholes
+            return read_boreholes(args['paths'])
         if self.kind == 'import':
             from .io import read_files
             data = read_files(args['paths'])

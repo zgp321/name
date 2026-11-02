@@ -7,7 +7,8 @@ import tempfile
 import numpy as np
 import pandas as pd
 from .model import Result
-from .visualize import plot_decay,plot_section,plot_3d_illustration
+from .quality import build_quality_report
+from .visualize import plot_decay,plot_section,plot_3d_illustration,plot_joint_section
 
 
 def export_result(result:Result,folder:str|Path,with_images=True) -> Path:
@@ -37,11 +38,14 @@ def export_result(result:Result,folder:str|Path,with_images=True) -> Path:
             stage.mkdir()
         for name in ('gates_processed.csv', 'anomaly_candidates.csv', 'pseudo_section_xyz.csv',
                      'pseudo_section_arrays.npz', 'manifest.json', '成果说明.md',
-                     'decay.png', 'pseudo_section.png', 'anomalies_2p5d.png'):
+                     'qc_station_summary.csv', 'qc_gate_summary.csv', 'boreholes.csv',
+                     'borehole_candidate_links.csv', 'decay.png', 'pseudo_section.png',
+                     'anomalies_2p5d.png', 'geology_joint_section.png'):
             if (stage / name).is_symlink():
                 raise ValueError(f'成果文件不能是符号链接：{name}')
         if not with_images:
-            for name in ('decay.png', 'pseudo_section.png', 'anomalies_2p5d.png'):
+            for name in ('decay.png', 'pseudo_section.png', 'anomalies_2p5d.png',
+                         'geology_joint_section.png'):
                 (stage / name).unlink(missing_ok=True)
         _write_result(result, stage, with_images)
         if target.exists():
@@ -75,11 +79,35 @@ def _write_result(result:Result,folder:str|Path,with_images=True) -> Path:
                   out/'pseudo_section_xyz.csv',index=False,encoding='utf-8-sig')
     np.savez_compressed(out/'pseudo_section_arrays.npz',x_m=p['x_m'],depth_m=p['depth_m'],
                          rho_ohm_m=p['rho_ohm_m'],candidate_mask=p['candidate_mask'])
+    report = result.quality_report or build_quality_report(result.readings)
+    report['station_summary'].to_csv(out/'qc_station_summary.csv', index=False, encoding='utf-8-sig')
+    report['gate_matrix'].to_csv(out/'qc_gate_summary.csv', index=False, encoding='utf-8-sig')
+    boreholes = getattr(result, 'boreholes', None)
+    links = getattr(result, 'borehole_links', None)
+    if boreholes is not None and not boreholes.empty:
+        boreholes.to_csv(out/'boreholes.csv', index=False, encoding='utf-8-sig')
+    else:
+        (out/'boreholes.csv').unlink(missing_ok=True)
+    if links is not None and not links.empty:
+        links.to_csv(out/'borehole_candidate_links.csv', index=False, encoding='utf-8-sig')
+    else:
+        (out/'borehole_candidate_links.csv').unlink(missing_ok=True)
+    quality_diagnostics = dict(report['totals'])
+    quality_diagnostics['reason_counts'] = {
+        str(row.qc): int(row.gate_count) for row in report['reason_summary'].itertuples(index=False)
+    }
     manifest={'software':'矿井瞬变电磁TEM水害智能识别处理系统V1.0',
               'engine':result.quality.get('engine','late-time half-space apparent-resistivity quicklook (not inversion)'),
               'utc_created':datetime.now(timezone.utc).isoformat(),
               'line_id':result.line_id,'settings':result.settings.to_dict(),
               'quality':result.quality,'candidate_count':len(result.anomalies),
+              'quality_diagnostics': quality_diagnostics,
+              'geology_overlay': {
+                  'borehole_count': int(boreholes['borehole_id'].nunique()) if boreholes is not None and not boreholes.empty else 0,
+                  'interval_count': int(len(boreholes)) if boreholes is not None and not boreholes.empty else 0,
+                  'link_count': int(len(links)) if links is not None and not links.empty else 0,
+                  'depth_reference': '伪深度几何对照，非真实地下高程',
+              },
               'view_type':p['view_type'],'demo_only':result.line_id=='DEMO'}
     (out/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     readme=(f'# TEM 测线 {result.line_id} 辅助判读成果\n\n'
@@ -87,6 +115,7 @@ def _write_result(result:Result,folder:str|Path,with_images=True) -> Path:
             f'- 时间门：{result.quality["total_gates"]}；有效：{result.quality["accepted_gates"]}。\n'
             f'- 低阻候选异常：{len(result.anomalies)} 处。**不能仅由低阻判定有水**。\n'
             '- 原始与质控结果见 gates_processed.csv，参数和质量统计见 manifest.json。\n'
+            '- 质量诊断明细见 qc_station_summary.csv 和 qc_gate_summary.csv。\n'
             '- 伪深度与面积不能用于直接估算积水储量；三维图只是二维剖面沿假定宽度拉伸。\n'
             '- 请结合钻探、充水条件、水文地质、井下金属设施及其他物探成果解释。\n')
     (out/'成果说明.md').write_text(readme,encoding='utf-8')
@@ -95,4 +124,7 @@ def _write_result(result:Result,folder:str|Path,with_images=True) -> Path:
                           ('anomalies_2p5d.png',plot_3d_illustration)]:
             fig=func(result)
             fig.savefig(out/name,dpi=240,facecolor='white')
+        if boreholes is not None and not boreholes.empty:
+            fig = plot_joint_section(result, boreholes)
+            fig.savefig(out/'geology_joint_section.png', dpi=240, facecolor='white')
     return out
